@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Apnoe Trainer</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Arial Black', sans-serif; }
+        body { background-color: #121212; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; text-align: center; }
+        h1 { font-size: 2rem; margin-bottom: 20px; color: #aaaaaa; }
+        .setup-container { background-color: #1e1e1e; padding: 25px; border-radius: 15px; width: 100%; max-width: 400px; }
+        .input-group { margin-bottom: 20px; }
+        label { display: block; font-size: 1.2rem; margin-bottom: 10px; color: #dddddd; }
+        .time-inputs { display: flex; gap: 10px; justify-content: center; }
+        input { width: 80px; padding: 12px; font-size: 1.5rem; background-color: #2a2a2a; border: 2px solid #444444; color: #fff; border-radius: 8px; text-align: center; }
+        button { width: 100%; padding: 18px; font-size: 1.5rem; font-weight: bold; border: none; border-radius: 10px; cursor: pointer; }
+        .btn-start { background-color: #00cc66; color: #000000; }
+        .btn-stop { background-color: #ff3333; color: #ffffff; margin-top: 20px; width: 100%; max-width: 400px; }
+        .timer-container { display: none; width: 100%; max-width: 500px; }
+        
+        .status-box { font-size: 2.2rem; text-transform: uppercase; margin-bottom: 10px; padding: 15px; border-radius: 10px; font-weight: 900; word-wrap: break-word; }
+        .status-bereit { color: #00cc66; }
+        .status-atmen { color: #3399ff; }
+        .status-halten { color: #ff3333; }
+        
+        .zeit-anzeige { font-size: 6.5rem; font-weight: 900; margin: 20px 0; letter-spacing: 2px; }
+        .info-anzeige { font-size: 1.8rem; color: #bbbbbb; margin-bottom: 10px; }
+        .next-info { font-size: 1.2rem; color: #777777; }
+    </style>
+</head>
+<link rel="icon" type="image/png" href="punkt.png">
+<link rel="apple-touch-icon" href="punkt.png">
+<body>
+    <!-- START-EINSTELLUNGEN -->
+    <div id="setupView" class="setup-container">
+        <h1>APNOE TRAINING</h1>
+        <div class="input-group">
+            <label>Luftanhalte-Zeit (Min : Sek)</label>
+            <div class="time-inputs">
+                <input type="number" id="holdMin" value="1" min="0" max="10">
+                <input type="number" id="holdSec" value="10" min="0" max="59">
+            </div>
+        </div>
+        <button class="btn-start" onclick="starteTraining()">TRAINING STARTEN</button>
+    </div>
+
+    <!-- AKTIVES TRAINING -->
+    <div id="timerView" class="timer-container">
+        <div id="statusText" class="status-box">BEREITMACHEN</div>
+        <div id="timeDisplay" class="zeit-anzeige">00:05</div>
+        <div id="roundDisplay" class="info-anzeige">Vorbereitung</div>
+        <div id="nextDisplay" class="next-info">Danach: Luft anhalten</div>
+        <button class="btn-stop" onclick="stoppeTraining()">TRAINING STOPPEN</button>
+    </div>
+
+    <script>
+        let audioCtx = null;
+        
+        function initAudio() {
+            if (!audioCtx) { 
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)(); 
+            }
+            if (audioCtx.state === 'suspended') { 
+                audioCtx.resume(); 
+            }
+        }
+        
+        function piepe(frequenz, dauer) {
+            try {
+                initAudio();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.connect(gain); 
+                gain.connect(audioCtx.destination);
+                osc.type = 'sine'; 
+                osc.frequency.value = frequenz;
+                gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                osc.start(); 
+                setTimeout(() => osc.stop(), dauer);
+            } catch (e) { 
+                console.log("Audio Fehler:", e); 
+            }
+        }
+
+        function signalisiereSekunde(sekundenRest) {
+            if (sekundenRest === 3 || sekundenRest === 2 || sekundenRest === 1) {
+                piepe(800, 150); 
+                if (navigator.vibrate) { navigator.vibrate(100); }
+            } 
+            else if (sekundenRest === 0) {
+                piepe(1200, 600); 
+                if (navigator.vibrate) { navigator.vibrate(500); }
+            }
+        }
+
+        let intervalId = null;
+        let rundenDefinition = [];
+        let aktuellePhaseIndex = 0;
+        let verbleibendeSekunden = 0;
+
+        function getPausenZeit(rundenIndex) {
+            if (rundenIndex === 0) return 60;
+            if (rundenIndex === 1) return 50;
+            if (rundenIndex === 2) return 40;
+            if (rundenIndex === 3) return 30;
+            if (rundenIndex === 4) return 20; // Pause nach Runde 5
+            return 10;                        // Pause nach Runde 6
+        }
+
+        function starteTraining() {
+            initAudio();
+            
+            const holdMin = parseInt(document.getElementById('holdMin').value) || 0;
+            const holdSec = parseInt(document.getElementById('holdSec').value) || 0;
+            const haltezitGesamt = (holdMin * 60) + holdSec;
+            
+            if (haltezitGesamt <= 0) {
+                alert("Bitte eine gültige Zeit eingeben.");
+                return;
+            }
+
+            rundenDefinition = [];
+            
+            // 5 Sekunden Vorbereitungsphase
+            rundenDefinition.push({ typ: 'bereit', dauer: 5, runde: 0 });
+
+            // Schleife läuft für alle 7 Intervalle
+            for (let i = 0; i < 7; i++) {
+                // Luftanhalten für die aktuelle Runde
+                rundenDefinition.push({ typ: 'halten', dauer: haltezitGesamt, runde: i + 1 });
+                
+                // Pause anhängen – außer nach der absolut letzten Runde (Runde 7)
+                if (i < 6) {
+                    rundenDefinition.push({ typ: 'atmen', dauer: getPausenZeit(i), runde: i + 1 });
+                }
+            }
+            
+            document.getElementById('setupView').style.display = 'none';
+            document.getElementById('timerView').style.display = 'block';
+            
+            aktuellePhaseIndex = 0; 
+            ladePhase();
+            
+            if (intervalId) clearInterval(intervalId);
+            intervalId = setInterval(tick, 1000);
+        }
+
+        function ladePhase() {
+            if (aktuellePhaseIndex >= rundenDefinition.length) { 
+                stoppeTraining(); 
+                alert("Training beendet!"); 
+                return; 
+            }
+            
+            const phase = rundenDefinition[aktuellePhaseIndex];
+            verbleibendeSekunden = phase.dauer;
+            const statusText = document.getElementById('statusText');
+            const nextDisplay = document.getElementById('nextDisplay');
+            
+            if (phase.typ === 'bereit') {
+                statusText.innerText = "BEREITMACHEN";
+                statusText.className = "status-box status-bereit";
+                document.getElementById('roundDisplay').innerText = "Vorbereitung";
+                nextDisplay.innerText = "Danach: Luft anhalten";
+            } else if (phase.typ === 'halten') { 
+                statusText.innerText = "HALTEN"; 
+                statusText.className = "status-box status-halten"; 
+                document.getElementById('roundDisplay').innerText = `Runde: ${phase.runde} / 7`;
+                
+                if (phase.runde < 7) {
+                    nextDisplay.innerText = `Danach Pause: ${getPausenZeit(phase.runde - 1)} Sek.`;
+                } else {
+                    nextDisplay.innerText = "Danach: Training zu Ende";
+                }
+            } else { 
+                statusText.innerText = "ATMEN"; 
+                statusText.className = "status-box status-atmen"; 
+                document.getElementById('roundDisplay').innerText = `Pause nach Runde: ${phase.runde} / 7`;
+                nextDisplay.innerText = "Danach wieder Luft anhalten";
+            }
+            
+            aktualisiereAnzeige();
+            
+            if (verbleibendeSekunden <= 3 && verbleibendeSekunden > 0) {
+                signalisiereSekunde(verbleibendeSekunden);
+            }
+        }
+
+        function tick() {
+            if (verbleibendeSekunden > 0) {
+                verbleibendeSekunden--;
+                aktualisiereAnzeige();
+                if (verbleibendeSekunden <= 3) {
+                    signalisiereSekunde(verbleibendeSekunden);
+                }
+            } else {
+                aktuellePhaseIndex++;
+                ladePhase();
+            }
+        }
+
+        function aktualisiereAnzeige() {
+            const min = Math.floor(verbleibendeSekunden / 60);
+            const sec = verbleibendeSekunden % 60;
+            document.getElementById('timeDisplay').innerText = 
+                `${min.toString().padStart(2, '0')}:${sec.toString().padStart(2, '0')}`;
+        }
+
+        function stoppeTraining() {
+            if (intervalId) {
+                clearInterval(intervalId);
+                intervalId = null;
+            }
+            document.getElementById('timerView').style.display = 'none';
+            document.getElementById('setupView').style.display = 'block';
+        }
+    </script>
+</body>
+</html>
